@@ -1,0 +1,241 @@
+---
+title: Can The Little Book Really Beat The Market?
+output: 
+  html_document:
+    toc: true # table of content true
+    toc_float: true
+    depth: 3  # upto three depths of headings (specified by #, ## and ###)
+    number_sections: true  ## if you want number sections at each table header
+    theme: spacelab  # many options for theme, this one is my favorite.
+    highlight: tango  # specifies the syntax highlighting style
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(ggplot2)
+library(ggthemes)
+library(sqldf)
+library(data.table)
+library(zoo)
+library(memisc)
+
+input_file <- 'files/'
+raw_file <- 'files/raw/'
+
+#load quarterly data
+quarterly <- readRDS(paste0(input_file,'quarterly.rds'))
+little_book <- readRDS(paste0(input_file,'little_book.rds'))
+```
+
+# Executive Summary
+
+Joel Greenblatt employs an extremely simple ranking strategy--or algorithm, if you are fancy like that--that he claims (still) beats the market after its first publication in 2005. It comes down to the most basic of questions we ask ourselves when we first invest in the stock market: what are the characteristics of companies whose prices will rise? Greenblatt has broken the question into two smaller ones: how much the company is making for each dollar it invests and how much that earning power surpasses (or falls short of) investors' expectations. We will investigate the viability of this strategy in the context of the Thai SET Index, with quarterly data from December 2009 to June 2014.
+	
+# Theoretical Background
+
+## Size and Sector
+
+Before getting to the actual ranking algorithm, we filter out stocks that have less than 2 billion baht market cap and those that are in utilities or financial sectors. The reason for the size filtering is that the strategy focuses on the long term and one-hit wonders of smaller companies might interfere with the results. Also, in reality, it is difficult to procure stocks of smaller companies which might not have a lot of free-floating common stocks. This effectively rules out a little more than 50% of all stocks from our timeframe.
+
+```{r}
+quantile(quarterly$valuationandqualitymarketcap)
+quarterly_plot <- quarterly[quarterly$valuationandqualitymarketcap <= 10000,]
+quarterly_plot$color_picker <- 
+ifelse(quarterly_plot$valuationandqualitymarketcap>=2000,"In","Out")
+g<-ggplot(data=quarterly_plot,aes(x=valuationandqualitymarketcap,fill=color_picker,
+   group=color_picker)) + scale_fill_fivethirtyeight() + theme_fivethirtyeight() +
+   geom_histogram(bins=100) + theme(legend.position="bottom",legend.title=element_blank()) +
+   ggtitle('Market Cap of All Historical Stocks')
+g 
+```
+
+As for utilities and financial sectors, it is because both ROC and EY is optimized to judge industries whose earnings come from investment in a relatively "straightforward" manner. For instance, a utilities company might win a big contract and double its stock price regardless of how it has utilized its capital, or a bank might cut a hocus-pocus financial magic deal that triples its earnings overnight.
+
+## Return on Capital
+
+The first ranking criterion is represented by a metric called **return on capital (ROC)**. The *return* of ROC is **earnings before taxes and interests (EBIT)**, aka the money that the company makes from its core business. This way we do not have to worry about depreciations (yearly payments for big assets it has bought previously), as well as taxes and interests whose structure can change over time. This important since this strategy has an annual timeframe and Greenblatt stated that you have to invest at least for 5-10 years to see it come to fruition. Such is a long period of time during which the company could buy new factories, the government could change a tax structure or the central bank the interest. EBIT allows us to bypass all those. 
+
+The *capital* part is more complicated. First, it consists of the **net fixed assets** such as land, buildings, and machineries. It excludes goodwills and intangible assets such as patents and brand power. This could underestimate the technology sector whose large portion of value resides in such intangible assets. Or not, since the strategy only cares about ranking not absolute values of any metric and those tech companies who have large intangible assets tend to spend a lot on tangible assets such as data centers as well. Second, it deals with **working capital**, a metric that basically says if the company has enough current assets (accounts receivable, inventory, and others) to offset its current liabilities (vice versa), that is, if it is efficient in short-term operations. Greenblatt takes an average of net fixed assets (long-term efficiency) and working capital (short-term efficiency) as capital in his ROC. Therefore, the ROC is coined as:
+
+$$ROC = \frac{EBIT}{(Net Fixed Asset + Working Capital)/2}$$
+
+It represents the company's ability to earn money based on its long- and short-term investments. Below is the plot based on our filtered stock universe of how ROC correlates price growth in each quarter (outliers removed). In short, it does not really.
+
+```{r}
+print(paste0('Correlation: ',cor(little_book$roc,little_book$real_priceg)))
+g <- ggplot(little_book, 
+            aes(x=roc,y=real_priceg,color='1')) + theme_fivethirtyeight()+ 
+     geom_point(alpha=0.3) + geom_smooth(method='lm',se = FALSE) +
+     scale_y_continuous(labels=scales::percent,limits = c(-1,1)) +
+     scale_x_continuous(labels=scales::percent,limits = c(-1,1)) +
+     scale_color_fivethirtyeight() +
+     theme(legend.position='none') + ggtitle('Price Growth by ROC')
+g 
+```
+
+## Earning Yields
+
+Whereas the first criterion concerns itself with the earning engine of the company, the second ranking criterion looks at how that engine is priced. It uses a metric called **earning yield (EY)**, which is EBIT over enterprise value. We can think of enterprise value as the theoretical price if we were to take over the company. If we were to take over a company, we would pay for its common stocks (market cap), preferred stocks, liabilities and minority interests and receive its cash and equivalents--that is how we define enterprise value. Thus, earning yield is defined as:
+
+$$EY = \frac{EBIT}{Enterprise Value} = \frac{EBIT}{Market Cap + Preferred Stocks + Liabilities + Minority Interests - Cash and Equivalents}$$
+
+It represents the reality versus expectations of a company's earning capabilities. And this is how EY in each quarter of our filtered universe correlates with price growth. Also not really.
+
+```{r}
+print(paste0('Correlation: ',cor(little_book$ey,little_book$real_priceg)))
+g <- ggplot(little_book, 
+            aes(x=ey,y=real_priceg,color='1')) + 
+     geom_point(alpha=0.3) + geom_smooth(method='lm',se=FALSE) +
+     scale_y_continuous(labels=scales::percent,limits = c(-1,1)) +
+     scale_x_continuous(labels=scales::percent,limits = c(-.5,.5)) +
+     theme_fivethirtyeight() + theme(legend.position='none')  + ggtitle('Price Growth by EY')
+g 
+```
+
+## Ranking
+
+So how in the world will these two metrics that do not correlate with price growth help us beat the market? Earlier, we removed outliers from our plots in an attempt to find correlations. Greenblatt does the exact opposite; he specifically chooses the outliers. Once we have both ROC and EY of all companies calculated (Greenblatt suggested using annual data but we do not see any problem with using trailing twelve months data), we rank all the filtered stocks by its ROC and EY separately, then add the rank together to create the final ranking. Out of about 300 stocks, we choose top-ranked 30-50 stocks and gradually buy them at equal weight. Finally, we hold onto the positions for a year and sell everything. Rinse and repeat for at least 5-10 years. 
+
+```{r}
+g <- ggplot(little_book,aes(x=fiscalyear,fill='1'))+ geom_bar()+theme_fivethirtyeight()+
+   ggtitle('Number of Stocks in Market by Quarter') +
+  scale_fill_manual(values='#e28400') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position='none')
+g 
+```
+
+Note that in the original Greenblatt book, he suggests selling losers one week before they reach the one-year period of holding and the winners one week after due to tax reasons but in Thailand there is no capital gain tax so we neglect the complications.
+
+## The Formula
+
+So this is the *magic* formula in its entire glory:
+
+1. Filter for stocks with 2 billion baht and not in utilities or financial sectors
+2. Rank with ROC and EY
+3. Combine the ranks to make a final one
+4. Buy 30-50 top ranked stocks with equal weights
+5. Sell after 1 year of holding
+6. Rinse and repeat for at least 5-10 years
+
+# Criticisms
+
+Needless to say, there are a MILLION reasons to be skeptical about this strategy, but before we go on to empirically test it in the most rigorous manner we think is possible, let us look at some of the most incriminating ones:
+
+1. **Timeframe** The fact that we have to invest for 5-10 years in order to be able to have a compound annual growth rate (CAGR) that "beats the market" (more than 15.56% if you are investing from 2002-2015) means that by the time we know if the strategy works or not, to quote Keynes, "in the long run, we are all dead". Of course, we can backtest but with the benchmark SET TRI index starting from 2002, we only have 3 intervals of Greenblatt's specified timeframe to test on (10 if we sample with replacement). That hardly qualifies for statistical significance.
+
+2. **Buy Timing** Since computation of ROC and EY relies on fundamental data, in real life we usually have to wait for a quarter after that information is released in the company filings. By that time, the price might no longer reflect such ROC and EY rankings. In his own backtest which outperformed SPY by roughly 10%, Greenblatt "bought" the stocks at year end prices as if he read their annual reports in December, while in fact that information will not be available until as late as March of next year. We cannot do this unless we have insider information of all companies in the stock market. It is true that we can substitute expected figures provided by various equity researchers, but that diminishes the virtue of simplicity that is the trademark of the magic formula strategy and puts ourselves at mercy of other people's analyses and ultimately agenda.
+
+3. **Backward Looking** Ranking by ROC and EY assumes that such metrics are representative of all the companies regardless of time. In case of ROC, it expects the companies to perform as well next year as they do this year. In case of EY, it expects the companies to keep meeting (falling short of) expectations next year the same way they do this year. This overestimates companies that have reached their peak performances and are reaching the period of gradual growth, and underestimates those that are in full-fledged exponential growth period.
+
+4. **Magnitude** As for any ranking algorithm, the magic formula fails to capture the magnitude of differences between ranks. For instance, the top-ranked company might perform 10 times better than the second but both got bought at the same weight, or the 31st company might only be slightly worse than the 30th yet got cut off.
+
+5. **Diversification** For some markets, the top 30-50 stocks might correlate a lot among one another and thus not have resilience against sector-wise swings.
+
+# Results
+
+With that being said, we set out to pit magic against (the closest thing to) science and see how it performs. In order to combat the timeframe, and ultimately the lack of observations, problem, we assume that we are making a new magic formula portfolio every *quarter* instead of every year. We do this by taking trailing twelve months (TTM) of data; for instance, we calculate ROC and EY of the first quarter of 2011 will be calculated by the data from the second quarter of 2010 to the first quarter of 2011. 
+
+In addition, we follow the invest-for-at-least-5-years rule and measure the returns by five-year intervals instead of annually. Since we have data from 2009 to 2014, we end up having 19 observations in total starting from holding 2009/12 portfolio through to 2010/12.
+
+## Backtesting
+
+To demonstrate the effect of buy timing, we have one set of results based on Greenblatt's timing (buying as though we knew the company's reports at the end of the TTM period) and another one based on the probable actual timing (buying at the end of next quarter aka when the reports are published). Our backtest consists of one portfolio of top 30 stocks for each quarter.
+
+```{r}
+#bought stocks
+bought_little <- little_book[little_book$magic_rank<=30,]
+
+#profit by year
+profit_little <- sqldf("
+                       select
+                       fiscalyear,
+                       `year`,
+                       `month`,
+                       avg(priceg) as fake_return,
+                       avg(real_priceg) as real_return,
+                       avg(set_return) as set_return,
+                       avg(real_set_return) as real_set_return
+                       from bought_little
+                       group by fiscalyear,`year`,`month`
+                       ")
+profit_little$fake_return_5y <- rollapply(profit_little$fake_return,width=5,
+                                          FUN=function(x) exp(mean(log(1+x)))-1,fill=NA,
+                                          align='right')
+profit_little$real_return_5y <- rollapply(profit_little$real_return,width=5,
+                                          FUN=function(x) exp(mean(log(1+x)))-1,fill=NA,
+                                          align='right')
+profit_little$set_return_5y <- rollapply(profit_little$set_return,width=5,
+                                          FUN=function(x) exp(mean(log(1+x)))-1,fill=NA,
+                                          align='right')
+profit_little$real_set_return_5y <- rollapply(profit_little$real_set_return,width=5,
+                                          FUN=function(x) exp(mean(log(1+x)))-1,fill=NA,
+                                          align='right')
+profit_little <- profit_little[complete.cases(profit_little),]
+
+#melt
+profit_little_m <- melt(profit_little)
+fake_quarter <- profit_little_m[profit_little_m$variable %in% c('fake_return_5y','set_return_5y'),]
+real_quarter <- profit_little_m[profit_little_m$variable %in% c('real_return_5y','real_set_return_5y'),]
+
+#average
+colMeans(profit_little[,8:11])
+
+g1 <- ggplot(fake_quarter,aes(x=fiscalyear,y=value,group=variable,color=variable)) + 
+  theme_fivethirtyeight() + ggtitle('"Insider" Portfolio vs Benchmark') +
+  geom_point() +geom_line() + scale_color_economist() + xlab('Quarter') + ylab('Return') +
+  scale_y_continuous(labels = scales::percent) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.title=element_blank()) 
+g1
+```
+
+As we can see, both buy timing outperforms the benchmark on average with the "insider" timing that Greenblatt used in his backtest doing almost twice better than that of public information timing.
+
+```{r}
+g2 <- ggplot(real_quarter,aes(x=fiscalyear,y=value,group=variable,color=variable)) + 
+  theme_fivethirtyeight()+ggtitle('"Real" Portfolio vs Benchmark') +
+  geom_point() +geom_line() + scale_color_economist() + xlab('Quarter') + ylab('Return') +
+  scale_y_continuous(labels = scales::percent) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.title=element_blank()) 
+g2
+```
+
+Also notice that, graphically, when the both the strategy and the market lost, the strategy lost less heavily but when they both won, the strategy won big. This might suggest that the strategy *could* beat the market by 5-10% in the long run.
+
+## Seeking Alpha
+
+But backtest is hardly statistically robust, so we opt for a little more *believable* measure: linear regression. When we hear quants say a strategy has an **alpha**, what they mean is that when we formulate the returns of a strategy as follows:
+
+$$R_p = \alpha + \beta * (R_m - R_f)$$
+
+The constant (often represented with $\alpha$ or $\beta_0$) is positive and statistically significant. That means the strategy in itself has an advantage over the market, thus the term **beating the market**. Since in this case, we do not care about predicting the exact returns as long as we know that the strategy has a significant alpha, we use all 19 observations※ we have for the analysis.
+
+```{r}
+fit_fake <- lm(fake_return_5y~set_return_5y,profit_little)
+fit_real <- lm(real_return_5y~real_set_return_5y,profit_little)
+
+result_table <- mtable('Insider' = fit_fake,
+            'Real' = fit_real,
+            summary.stats = c('R-squared','F','p','N'))
+result_table
+```
+
+Unfortunately, that did not happen for our test of the magic formula. The "insider" portfolio has a minimal alpha (0.1%) which is of course not statistically significant. Moreover, remember how the return plots of our strategy look resilient (lose small, win big)? It turns out that that is not true either. The beta (coefficient of market returns) is significant at value of 2.6 - 3. This means that 1% market swing will on average account for 2.6 - 3% swing of our portfolio. Yikes.
+
+# Verdict
+
+We generally do not encourage people to invest in strategy that we have spent time proving is NOT scientific, but we accept that we tested based on limited information and the theoretical background of the magic formula does sound convincing albeit incomplete.
+
+At the end of the day, like other investment strategies, the magic formula requires discipline and common sense in its application. Discipline to believe and follow the same strategy for at least 5-10 years and common sense in not blindly taking what the ranking gives you but also investigate what those 30-50 companies actually do.
+
+For those who wish to apply the formula, here are some tinkerings that we think are useful:
+
+1. **It is an art not science.** With such meager observations, no one can say with any scientific vigor that the magic formula works like gravity (heck, no one knows exactly how gravity works anyways). We need to realize that 5 years into the strategy, we might still be at loss. But hey, what investment strategy IS science?
+
+2. **Discount Greenblatt's backtest returns.** Since we will be buying some time after the fundamentals (revenues, and all) are realized, we might not get as well-timed prices as Greenblatt did with his backtest.
+
+3. **Add some indicators of growth.** Some people substitute EY with **forward rate of return**, which is normalized cash flows for the last x years in order to show growth trends. It seems like a good idea if you are a hard quant who does not want to tackle anything except for number, but we recommend actually looking into the business of the selected 30-50 companies and see if they have the prospects of growing in the next 3-5 years, or at least next year. Because, well, you should know the business you are putting money on.
+
+4. **Ranking needs not be absolute.** If 10 out of 30 companies you picked are from the same sector, then you might want to not blindly follow the ranking and diversify a little bit. Since the ranking does not represent the magnitude of differences among companies, choosing up to 35 instead of 30 companies should not hurt your portfolio so much as having a highly correlated one.
+
+※ It is ridiculous we know but 2009-2014 has the most complete fundamental data about Thai stock we can find (from Morningstar). We tried contacting SET but they sell a very raw version of company annual reports (some in pdf!) at a price we could not afford at the moment.
